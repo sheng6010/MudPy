@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Jan 27 14:49:15 2023
+
+@author: yu-shengsun
+"""
+
+def load_fakequakes_synthetics(home,project_name,fault_name,model_name,GF_list,G_from_file,G_name):
+    ''''
+    Load the miniseed files with all the synthetics
+    '''
+    from numpy import genfromtxt,loadtxt
+    from obspy import read       
+    import obspy
+    import io
+    import os
+    import threading
+    global Eds,Nds,Zds,Ess,Nss,Zss
+    import multiprocessing
+
+    vord='disp'
+    if G_from_file==True: #load from file
+        print('... ... read from miniSEED into stream objects')
+        
+        filesize=os.path.getsize(home+project_name+'/GFs/matrices/'+G_name+'.Eds.'+vord+'.mseed')/1024/1024
+        comps=['Eds','Nds','Zds','Ess','Nss','Zss']
+        
+        #ObsPy can currently not directly read mini-SEED files that are larger than 2^31 bytes (2048 MiB).
+        if filesize > 1024: 
+            reclen = 1024
+            chunksize = 1024*1024 * reclen # 1024 MB
+            for i in range(len(comps)):
+                globals()[comps[i]]=[]
+                with io.open(home+project_name+'/GFs/matrices/'+G_name+'.'+comps[i]+'.'+vord+'.mseed',"rb") as fh:
+                    while True:
+                        with io.BytesIO() as buf:
+                            c = fh.read(chunksize)
+                            if not c:
+                                break
+                            buf.write(c)
+                            buf.seek(0, 0)
+                            globals()[comps[i]] += read(buf)
+                        
+                globals()[comps[i]]=obspy.core.stream.Stream(globals()[comps[i]])
+        else:
+            for i in range(len(comps)): # loop load G matrices
+                globals()[comps[i]]=read(home+project_name+'/GFs/matrices/'+G_name+'.'+comps[i]+'.'+vord+'.mseed')         
+        del comps
+        
+    else: #assemble G one data type at a time, just displacememnt right now
+        #Load station info
+        station_file=home+project_name+'/data/station_info/'+GF_list
+        staname=genfromtxt(station_file,dtype="U",usecols=0)
+        Nsta=len(staname)
+        #Load fault model
+        source=loadtxt(home+project_name+'/data/model_info/'+fault_name,ndmin=2)
+        Nfaults=source.shape[0] #Number of subfaults
+        
+        kindex=0
+        q_Ess = multiprocessing.Queue()
+        q_Nss = multiprocessing.Queue()
+        q_Zss = multiprocessing.Queue()
+        q_Eds = multiprocessing.Queue()
+        q_Nds = multiprocessing.Queue()
+        q_Zds = multiprocessing.Queue()
+        job=[]
+
+        for ksta in range(Nsta):
+            print('... ... reading green functions for station #'+str(ksta+1)+' of '+str(Nsta))
+            p=multiprocessing.Process(target=load_fakequakes_synthetics_parallel,args=(home,project_name,model_name,Nsta,Nfaults,source,staname,vord,G_name,ksta,
+                                                    q_Ess,q_Nss,q_Zss,q_Eds,q_Nds,q_Zds))
+            job.append(p)
+            p.start()
+        
+        # Multiprocessing Queue maxsize limit is 32767
+        result_Ess=[q_Ess.get() for j in job]
+        result_Nss=[q_Nss.get() for j in job]
+
+        for p in job:
+            p.join()  
+            
+        r_Ess=[]
+        r_Nss=[]
+        
+        for i in range(Nsta):
+            r_Ess+=result_Ess[i]
+            r_Nss+=result_Nss[i]
+                               
+        
+        
+        print('... done, writting synthetics to miniSEED, hang on this might take a minute or two.')
+        Ess.write(home+project_name+'/GFs/matrices/'+G_name+'.Ess.'+vord+'.mseed',format='MSEED')
+        Nss.write(home+project_name+'/GFs/matrices/'+G_name+'.Nss.'+vord+'.mseed',format='MSEED')
+        Zss.write(home+project_name+'/GFs/matrices/'+G_name+'.Zss.'+vord+'.mseed',format='MSEED')
+        Eds.write(home+project_name+'/GFs/matrices/'+G_name+'.Eds.'+vord+'.mseed',format='MSEED')
+        Nds.write(home+project_name+'/GFs/matrices/'+G_name+'.Nds.'+vord+'.mseed',format='MSEED')
+        Zds.write(home+project_name+'/GFs/matrices/'+G_name+'.Zds.'+vord+'.mseed',format='MSEED')
+ 
+        
+def load_fakequakes_synthetics_parallel(home,project_name,model_name,Nsta,Nfaults,source,staname,vord,G_name,ksta,
+                                        q_Ess,q_Nss,q_Zss,q_Eds,q_Nds,q_Zds):
+    
+    from obspy import read       
+    
+
+    for kfault in range(Nfaults):
+        #Get subfault GF directory
+        nsub='sub'+str(int(source[kfault,0])).rjust(5,'0')
+        nfault='subfault'+str(int(source[kfault,0])).rjust(5,'0')
+        strdepth='%.4f' % source[kfault,3]
+        syn_path=home+project_name+'/GFs/dynamic/'+model_name+'_'+strdepth+'.'+nsub+'/'
+        #Get synthetics
+        if kfault==0 and ksta==0: #It's the first one, initalize stream object
+            Ess=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.e')
+            Nss=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.n')
+            Zss=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.z')
+            Eds=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.e')
+            Nds=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.n')
+            Zds=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.z')
+        else: #Just add to stream object
+            Ess+=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.e')
+            Nss+=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.n')
+            Zss+=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.z')
+            Eds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.e')
+            Nds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.n')
+            Zds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.z')
+        
+
+    q_Ess.put(Ess)
+    q_Nss.put(Nss)
+    q_Zss.put(Zss)
+    q_Eds.put(Eds)
+    q_Nds.put(Nds)
+    q_Zds.put(Zds)
