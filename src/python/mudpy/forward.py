@@ -289,6 +289,7 @@ def waveforms_fakequakes(home,project_name,fault_name,rupture_list,GF_list,
     import datetime
     import time
     from dask.distributed import Client
+    import numpy as np
     
     print('Solving for kinematic problem(s)')
     #Time for log file
@@ -306,8 +307,12 @@ def waveforms_fakequakes(home,project_name,fault_name,rupture_list,GF_list,
     
     #Load all synthetics
     print('... loading all synthetics into memory')
+    time_start = time.time() #開始計時 
     Nss,Ess,Zss,Nds,Eds,Zds=load_fakequakes_synthetics(home,project_name,fault_name,model_name,GF_list,
                                                        G_from_file,G_name)
+    time_end = time.time()    #結束計時
+    time_t= np.array(time_end - time_start)   #執行所花時間
+    np.savetxt(home+project_name+'/GFs/matrices/Gall_time.txt',[time_t])
     print('... ... ... done')
     
 
@@ -344,7 +349,7 @@ def waveforms_fakequakes(home,project_name,fault_name,rupture_list,GF_list,
     # print('... opening DASK client')
     # client = Client(n_workers=ncpus)
     
-    
+    record_t=[]
     #Now loop over rupture models
     for ksource in range(hot_start,len(all_sources)):
        
@@ -366,6 +371,9 @@ def waveforms_fakequakes(home,project_name,fault_name,rupture_list,GF_list,
                                    forward=forward,dt=dt,ncpus=ncpus,reconvolution=False)
         t2=time.time()
         print('... ... slip rate convolutions completed: wall time {:.1f}s'.format(t2-t1))
+        t3=t2-t1
+        
+
         # Solve
         print('... ... solve for waveforms (ncpus = %d)' % ncpus)
         waveforms = G.dot(m)
@@ -375,7 +383,8 @@ def waveforms_fakequakes(home,project_name,fault_name,rupture_list,GF_list,
         
     # print('... clean up: closing distributed client')
     # client.close()
-        
+        record_t=np.append(record_t,t3)
+    np.savetxt(home+project_name+'/output/waveforms/w_time.txt',record_t)    
    
     
    
@@ -1060,17 +1069,45 @@ def load_fakequakes_synthetics(home,project_name,fault_name,model_name,GF_list,G
     Load the miniseed files with all the synthetics
     '''
     from numpy import genfromtxt,loadtxt
-    from obspy import read    
-
+    from obspy import read       
+    import obspy
+    import io
+    import os
+    import time
+    
     vord='disp'
     if G_from_file==True: #load from file
         print('... ... read from miniSEED into stream objects')
-        Eds=read(home+project_name+'/GFs/matrices/'+G_name+'.Eds.'+vord+'.mseed')
-        Nds=read(home+project_name+'/GFs/matrices/'+G_name+'.Nds.'+vord+'.mseed')
-        Zds=read(home+project_name+'/GFs/matrices/'+G_name+'.Zds.'+vord+'.mseed')
-        Ess=read(home+project_name+'/GFs/matrices/'+G_name+'.Ess.'+vord+'.mseed')
-        Nss=read(home+project_name+'/GFs/matrices/'+G_name+'.Nss.'+vord+'.mseed')
-        Zss=read(home+project_name+'/GFs/matrices/'+G_name+'.Zss.'+vord+'.mseed')
+        
+        filesize=os.path.getsize(home+project_name+'/GFs/matrices/'+G_name+'.Eds.'+vord+'.mseed')/1024/1024
+        comps=['Eds','Nds','Zds','Ess','Nss','Zss']
+        global Eds,Nds,Zds,Ess,Nss,Zss
+        #ObsPy can currently not directly read mini-SEED files that are larger than 2^31 bytes (2048 MiB).
+        if filesize > 512: 
+            
+            reclen = 512
+            chunksize = 1024*1024 * reclen # 256 MB
+            for i in range(len(comps)):
+                globals()[comps[i]]=[]
+                with io.open(home+project_name+'/GFs/matrices/'+G_name+'.'+comps[i]+'.'+vord+'.mseed',"rb") as fh:
+                    while True:
+                        with io.BytesIO() as buf:
+                            c = fh.read(chunksize)
+                            if not c:
+                                break
+                            buf.write(c)
+                            buf.seek(0, 0)
+                            globals()[comps[i]] += read(buf)
+                             
+                globals()[comps[i]]=obspy.core.stream.Stream(globals()[comps[i]])
+                
+        else:
+            global Eds,Nds,Zds,Ess,Nss,Zss
+            for i in range(len(comps)): # loop load G matrices
+                globals()[comps[i]]=read(home+project_name+'/GFs/matrices/'+G_name+'.'+comps[i]+'.'+vord+'.mseed')     
+            
+        del comps
+        
     else: #assemble G one data type at a time, just displacememnt right now
         #Load station info
         station_file=home+project_name+'/data/station_info/'+GF_list
@@ -1084,8 +1121,8 @@ def load_fakequakes_synthetics(home,project_name,fault_name,model_name,GF_list,G
             print('... ... reading green functions for station #'+str(ksta+1)+' of '+str(Nsta))
             for kfault in range(Nfaults):
                 #Get subfault GF directory
-                nsub='sub'+str(int(source[kfault,0])).rjust(4,'0')
-                nfault='subfault'+str(int(source[kfault,0])).rjust(4,'0')
+                nsub='sub'+str(int(source[kfault,0])).rjust(5,'0')
+                nfault='subfault'+str(int(source[kfault,0])).rjust(5,'0')
                 strdepth='%.4f' % source[kfault,3]
                 syn_path=home+project_name+'/GFs/dynamic/'+model_name+'_'+strdepth+'.'+nsub+'/'
                 #Get synthetics
@@ -1103,7 +1140,11 @@ def load_fakequakes_synthetics(home,project_name,fault_name,model_name,GF_list,G
                     Eds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.e')
                     Nds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.n')
                     Zds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.z')
+                if kfault%100==0:
+                    print(kfault)  
                 kindex+=1
+            #time.sleep(5)
+                
         print('... done, writting synthetics to miniSEED, hang on this might take a minute or two.')
         Ess.write(home+project_name+'/GFs/matrices/'+G_name+'.Ess.'+vord+'.mseed',format='MSEED')
         Nss.write(home+project_name+'/GFs/matrices/'+G_name+'.Nss.'+vord+'.mseed',format='MSEED')
@@ -1111,7 +1152,234 @@ def load_fakequakes_synthetics(home,project_name,fault_name,model_name,GF_list,G
         Eds.write(home+project_name+'/GFs/matrices/'+G_name+'.Eds.'+vord+'.mseed',format='MSEED')
         Nds.write(home+project_name+'/GFs/matrices/'+G_name+'.Nds.'+vord+'.mseed',format='MSEED')
         Zds.write(home+project_name+'/GFs/matrices/'+G_name+'.Zds.'+vord+'.mseed',format='MSEED')
+    
     return Nss,Ess,Zss,Nds,Eds,Zds
+
+def load_fakequakes_synthetics_test(home,project_name,fault_name,model_name,GF_list,
+                                               G_from_file,G_name,sta_split,g_cpu):
+    ''''
+    Load the miniseed files with all the synthetics
+    '''
+    from numpy import genfromtxt,loadtxt
+    from obspy import read       
+    import obspy
+    import io
+    import os
+    import threading
+    from queue import Queue
+    import multiprocessing
+
+    vord='disp'
+    if G_from_file==True: #load from file
+        print('... ... read from miniSEED into stream objects')
+        
+        filesize=os.path.getsize(home+project_name+'/GFs/matrices/'+G_name+'.Eds.'+vord+'.mseed')/1024/1024
+        comps=['Eds','Nds','Zds','Ess','Nss','Zss']
+        global Eds,Nds,Zds,Ess,Nss,Zss
+        #ObsPy can currently not directly read mini-SEED files that are larger than 2^31 bytes (2048 MiB).
+        if filesize > 1024: 
+            reclen = 1024
+            chunksize = 1024*1024 * reclen # 1024 MB
+            for i in range(len(comps)):
+                globals()[comps[i]]=[]
+                with io.open(home+project_name+'/GFs/matrices/'+G_name+'.'+comps[i]+'.'+vord+'.mseed',"rb") as fh:
+                    while True:
+                        with io.BytesIO() as buf:
+                            c = fh.read(chunksize)
+                            if not c:
+                                break
+                            buf.write(c)
+                            buf.seek(0, 0)
+                            globals()[comps[i]] += read(buf)
+                        
+                globals()[comps[i]]=obspy.core.stream.Stream(globals()[comps[i]])
+        else:
+            for i in range(len(comps)): # loop load G matrices
+                globals()[comps[i]]=read(home+project_name+'/GFs/matrices/'+G_name+'.'+comps[i]+'.'+vord+'.mseed')         
+        del comps
+        
+    else: #assemble G one data type at a time, just displacememnt right now
+        #Load station info
+        station_file=home+project_name+'/data/station_info/'+GF_list
+        staname=genfromtxt(station_file,dtype="U",usecols=0)
+        Nsta=len(staname)
+        #Load fault model
+        source=loadtxt(home+project_name+'/data/model_info/'+fault_name,ndmin=2)
+        Nfaults=source.shape[0] #Number of subfaults
+        
+        
+        qEss = Queue()
+        qNss = Queue()
+        qZss = Queue()
+        qEds = Queue()
+        qNds = Queue()
+        qZds = Queue()
+        jop=[]
+
+        for ksta in range(Nsta):
+            print('... ... reading green functions for station #'+str(ksta+1)+' of '+str(Nsta))
+            pp=threading.Thread(target=load_fakequakes_synthetics_parallel,args=(home,project_name,model_name,Nsta,Nfaults,source,staname,vord,G_name,ksta,
+                                                    qEss,qNss,qZss,qEds,qNds,qZds))
+            jop.append(pp)
+            pp.start()
+        
+        # Multiprocessing Queue maxsize limit is 32767
+        result_Ess=[qEss.get() for j in jop]
+        result_Nss=[qNss.get() for j in jop]
+        result_Zss=[qZss.get() for j in jop]
+        result_Eds=[qEds.get() for j in jop]
+        result_Nds=[qNds.get() for j in jop]
+        result_Zds=[qZds.get() for j in jop]
+
+        for pp in jop:
+            pp.join()  
+            
+        Ess=[]
+        Nss=[]
+        Zss=[]
+        Eds=[]
+        Nds=[]
+        Zds=[]
+        
+        for i in range(Nsta):
+            Ess+=result_Ess[i]
+            Nss+=result_Nss[i]
+            Zss+=result_Zss[i]
+            Eds+=result_Eds[i]
+            Nds+=result_Nds[i]
+            Zds+=result_Zds[i]
+                               
+        # for p in job:
+        #     p.terminate()
+            
+        Ess=obspy.core.stream.Stream(Ess)
+        Nss=obspy.core.stream.Stream(Nss)
+        Zss=obspy.core.stream.Stream(Zss)
+        Eds=obspy.core.stream.Stream(Eds)
+        Nds=obspy.core.stream.Stream(Nds)
+        Zds=obspy.core.stream.Stream(Zds)
+
+        print('... done, writting synthetics to miniSEED, hang on this might take a minute or two.')
+        Ess.write(home+project_name+'/GFs/matrices/'+G_name+'.Ess.'+vord+'.mseed',format='MSEED')
+        Nss.write(home+project_name+'/GFs/matrices/'+G_name+'.Nss.'+vord+'.mseed',format='MSEED')
+        Zss.write(home+project_name+'/GFs/matrices/'+G_name+'.Zss.'+vord+'.mseed',format='MSEED')
+        Eds.write(home+project_name+'/GFs/matrices/'+G_name+'.Eds.'+vord+'.mseed',format='MSEED')
+        Nds.write(home+project_name+'/GFs/matrices/'+G_name+'.Nds.'+vord+'.mseed',format='MSEED')
+        Zds.write(home+project_name+'/GFs/matrices/'+G_name+'.Zds.'+vord+'.mseed',format='MSEED')
+ 
+        
+def load_fakequakes_synthetics_parallel(home,project_name,model_name,Nsta,Nfaults,source,staname,vord,G_name,ksta,
+                                        q_Ess,q_Nss,q_Zss,q_Eds,q_Nds,q_Zds):
+    
+    from obspy import read       
+    
+
+    for kfault in range(Nfaults):
+        #Get subfault GF directory
+        nsub='sub'+str(int(source[kfault,0])).rjust(5,'0')
+        nfault='subfault'+str(int(source[kfault,0])).rjust(5,'0')
+        strdepth='%.4f' % source[kfault,3]
+        syn_path=home+project_name+'/GFs/dynamic/'+model_name+'_'+strdepth+'.'+nsub+'/'
+        #Get synthetics
+        if kfault==0: #and ksta==0: #It's the first one, initalize stream object
+            ess=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.e')
+            Nss=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.n')
+            Zss=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.z')
+            Eds=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.e')
+            Nds=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.n')
+            Zds=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.z')
+        else: #Just add to stream object
+            ess+=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.e')
+            Nss+=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.n')
+            Zss+=read(syn_path+staname[ksta]+'.'+nfault+'.SS.'+vord+'.z')
+            Eds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.e')
+            Nds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.n')
+            Zds+=read(syn_path+staname[ksta]+'.'+nfault+'.DS.'+vord+'.z')
+        if kfault%100==0:
+            print(kfault)
+
+    q_Ess.put(ess)
+    q_Nss.put(Nss)
+    q_Zss.put(Zss)
+    q_Eds.put(Eds)
+    q_Nds.put(Nds)
+    q_Zds.put(Zds)
+
+def load_fakequakes_synthetics_sub(home,project_name,fault_name,model_name,GF_list,
+                                                   G_from_file,G_name,sta_split,g_cpu):
+    '''
+    Split stations from original .gflist and assemble sub G matrices
+    
+    Have to consider the relative size 
+    of system memory (sm) and GFs/dynamic and G matrices (G)
+    
+    sta_split: related to the size of sub G matrices
+    g_cpu: accommodate how many sub G assembling at the smae time
+    
+    '''
+    
+    
+    from numpy import genfromtxt, savetxt
+    import multiprocessing
+    import numpy as np
+    import threading
+    import time
+    
+    station_file=home+project_name+'/data/station_info/'+GF_list
+    staname=genfromtxt(station_file,dtype="U",usecols=0)
+    lon=genfromtxt(home+project_name+'/data/station_info/'+GF_list,usecols=1)  
+    lat=genfromtxt(home+project_name+'/data/station_info/'+GF_list,usecols=2) 
+    
+    in_0=np.linspace(0,len(staname),sta_split+1,dtype='int',endpoint=True)
+    i1=in_0[:-1]
+    i2=in_0[1:]-1
+    # ss=[]
+
+    I=int(np.ceil(sta_split/g_cpu))
+    it=np.append(np.ones(I-1)*g_cpu, sta_split-np.floor(sta_split/g_cpu)*g_cpu)
+    
+    job=[]
+    c=int(0)
+    time_start = time.time() #開始計時 
+    for i in range(I):
+        for j in range(int(it[i])):
+            # ss.extend(staname[i1[i]:i2[i]+1])
+            # ss=np.asarray(ss)
+            ss=np.column_stack((staname[i1[c]:i2[c]+1],lon[i1[c]:i2[c]+1],lat[i1[c]:i2[c]+1]))
+            savetxt(home+project_name+'/data/station_info/'+GF_list[:-7]+'_sub_'+str(c)+'.gflist',
+                     ss,fmt='%s\t%s\t%s')
+            gf_list=GF_list[:-7]+'_sub_'+str(c)+'.gflist'
+            g_name=G_name+'_'+str(c)
+            # p=multiprocessing.Process(target=load_fakequakes_synthetics_test(home,project_name,fault_name,model_name,gf_list,
+            #                                                   G_from_file,g_name,sta_split,g_cpu))
+            
+            p=multiprocessing.Process(target=load_fakequakes_synthetics,args=(home,project_name,fault_name,model_name,gf_list,
+                                                                G_from_file,g_name))
+            job.append(p)
+            p.start()
+            c+=1
+            print(c)
+        for p in job:
+            p.join()  
+            
+        for p in job:
+            p.terminate()
+    
+    time_end = time.time()    #結束計時
+    time_t= np.array(time_end - time_start)   #執行所花時間
+    np.savetxt(home+project_name+'/GFs/matrices/G_time.txt',[time_t])
+                
+def waveforms_fakequakes_sub(home,project_name,fault_name,rupture_list,GF_list,
+        model_name,run_name,dt,NFFT,G_from_file,G_name,source_time_function,
+        stf_falloff_rate,sta_split,hot_start,ncpus): 
+
+    
+    for i in range(sta_split): 
+        gf_list=GF_list[:-7]+'_sub_'+str(i)+'.gflist'
+        g_name=G_name+'_'+str(i)
+        waveforms_fakequakes(home,project_name,fault_name,rupture_list,gf_list,
+                model_name,run_name,dt,NFFT,G_from_file,g_name,source_time_function,
+                stf_falloff_rate,hot_start=hot_start,ncpus=ncpus)
 
 
 def list2stream(st_list):
@@ -1312,7 +1580,7 @@ def get_fakequakes_G_and_m(Gimpulse,home,project_name,rupture_name,time_epi,GF_l
         
         if reconvolution == False:
             sr = build_source_time_function(tau_r,dt,total_time,stf_type=source_time_function,
-                            zeta=zeta,dreger_falloff_rate=stf_falloff_rate)
+                            zeta=zeta,dreger_falloff_rate=stf_falloff_rate,scale=True,scale_value=dt)
         else:
             sr = build_source_time_function(tau_r,dt,total_time,stf_type='gauss_prem_i_2s',
                             time_offset_gauss=time_offset_gauss,scale=True,scale_value=1.0,quiet=True)
@@ -1738,10 +2006,14 @@ def write_fakequakes_waveforms(home,project_name,rupture_name,waveforms,GF_list,
         n_offset=n[0].data[-10:].mean()
         e_offset=e[0].data[-10:].mean()
         z_offset=z[0].data[-10:].mean()
+        # Marker channel
+        n[0].stats.channel="N"
+        e[0].stats.channel="E"
+        z[0].stats.channel="Z"
         # Get PGD
         pgd=sqrt(n[0].data**2+e[0].data**2+z[0].data**2).max()
         # Summary file
-        line_out+='%s\t%10.4f\t%10.4f\t%10.6f\t%10.6f\t%10.6f\t%10.6f\n' % (sta[ksta],lon[ksta],lat[ksta],n_offset,e_offset,z_offset,pgd)
+        line_out+='%s\t%10.4f\t%10.4f\t%.5e\t%.6e\t%.5e\t%.5e\n' % (sta[ksta],lon[ksta],lat[ksta],n_offset,e_offset,z_offset,pgd)
         # write to file
         n.write(directory+sta[ksta]+'.LYN.sac',format='SAC')
         e.write(directory+sta[ksta]+'.LYE.sac',format='SAC')
@@ -1923,8 +2195,8 @@ def coseismics_matrix(home,project_name,rupture_name,station_file,G_from_file,
                 print('... ... Loading source %i of %i' %(ksource,len(source_id)))
             
             #Get subfault parameters
-            nfault='sub'+str(int(source_id[ksource])).rjust(4,'0')
-            nfault2='subfault'+str(int(source_id[ksource])).rjust(4,'0')
+            nfault='sub'+str(int(source_id[ksource])).rjust(5,'0')
+            nfault2='subfault'+str(int(source_id[ksource])).rjust(5,'0')
             #Where's the synthetic data
             syn_path=glob(home+project_name+'/GFs/static/'+model_name+'*'+nfault)[0]
             
@@ -3859,7 +4131,8 @@ def convolution_matrix(h):
     
     
 def build_source_time_function(rise_time,dt,total_time,stf_type='triangle',zeta=0.2,dreger_falloff_rate=4,
-                               scale=True,scale_value=1.0,time_offset=0,time_offset_gauss=0,quiet=False):
+                               scale=True,scale_value=1.0,time_offset=0,time_offset_gauss=0,quiet=False,
+                               ji_fraction=0.2):
     '''
     Compute source time function for a given rise time
     '''
@@ -3922,6 +4195,26 @@ def build_source_time_function(rise_time,dt,total_time,stf_type='triangle',zeta=
             t_roll = rise_time/2 - min_rise_time/2
             t_roll_samples = int(t_roll/dt)
             Mdot = roll(Mdot,t_roll_samples)
+    elif stf_type == 'ji':
+        
+        tup = rise_time*ji_fraction
+        tdown = rise_time*(1-ji_fraction)
+    
+        #Up going cosine
+        s1 = (1./(tup+tdown))*(1-cos((pi*t)/tup))
+        i = where(t>tup)[0]
+        s1[i] = 0
+        
+        #Down going cosine
+        s2 = (1./(tup+tdown))*(1+cos((pi*(t-tup))/tdown))
+        i = where(t<=tup)[0]
+        s2[i] = 0 
+        i = where(t>tup+tdown)[0]
+        s2[i] = 0
+        
+        #add the two 
+        Mdot = s1+s2    
+    
     else:
         print('ERROR: unrecognized STF type '+stf_type)
         return
@@ -3931,7 +4224,10 @@ def build_source_time_function(rise_time,dt,total_time,stf_type='triangle',zeta=
             target=dt # this is the target scale value
         else:
             target=scale_value
+
         area=trapz(Mdot,t)
+        print(area)
+        print(scale_value)
         Mdot=Mdot*(scale_value/area)
     #Check for errors
     if isnan(Mdot[0])==True:
@@ -4168,4 +4464,3 @@ def sta_close_to_rupt(home,project_name,rupt_file,GF_list,dist_threshold,new_GF_
                 OUT1.write('%s %10.6f %10.6f 0 1 0 0 0 0 /foo/bar /foo/bar /foo/bar /foo/bar /foo/bar 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n'%(STAname[nsta],STAlon[nsta],STAlat[nsta]))
                 break
     OUT1.close()
-

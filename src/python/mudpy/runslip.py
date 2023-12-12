@@ -132,7 +132,7 @@ def make_green(home,project_name,station_file,fault_name,model_name,dt,NFFT,stat
             f.close()
             #Move to correct directory
             strdepth='%.4f' % source[k,3]
-            subfault=str(int(source[k,0])).rjust(4,'0') #subfault=rjust(str(int(source[k,0])),4,'0')
+            subfault=str(int(source[k,0])).rjust(5,'0') #subfault=rjust(str(int(source[k,0])),4,'0')
             if static==0 and tsunami==False:
                 #Move results to dynamic GF dir
                 dirs=glob.glob('*.mod_'+strdepth)
@@ -197,7 +197,7 @@ def make_parallel_green(home,project_name,station_file,fault_name,model_name,dt,
     OUT:
         Nothing
     '''
-    from numpy import loadtxt,arange,savetxt
+    from numpy import arange,savetxt,genfromtxt
     from os import path,makedirs,environ
     from shlex import split
     import subprocess
@@ -207,11 +207,11 @@ def make_parallel_green(home,project_name,station_file,fault_name,model_name,dt,
     station_file=home+project_name+'/data/station_info/'+station_file 
     fault_file=home+project_name+'/data/model_info/'+fault_name  
     #Load source model for station-event distance computations
-    source=loadtxt(fault_file,ndmin=2)
+    source=genfromtxt(fault_file)
     #Create all output folders
     for k in range(len(source)):
         strdepth='%.4f' % source[k,3]
-        subfault=str(k+1).rjust(4,'0')
+        subfault=str(k+1).rjust(5,'0')
         if static==0 and tsunami==False:
             subfault_folder=green_path+'dynamic/'+model_name+'_'+strdepth+'.sub'+subfault
             if path.exists(subfault_folder)==False:
@@ -286,7 +286,7 @@ def make_parallel_teleseismics_green(home,project_name,station_file,fault_name,m
     for k in range(len(source)):
         
         strdepth='%.4f' % source[k,3]
-        subfault=str(k+1).rjust(4,'0')
+        subfault=str(k+1).rjust(5,'0')
         
         subfault_folder=green_path+'dynamic/'+model_name+'_'+strdepth+'.sub'+subfault
         if path.exists(subfault_folder)==False:
@@ -355,7 +355,7 @@ def make_synthetics(home,project_name,station_file,fault_name,model_name,integra
     #Now compute synthetics please, one sub fault at a time
     for k in range(hot_start,source.shape[0]):
         print('ksource = ' + str(k))
-        subfault=str(k+1).rjust(4,'0')
+        subfault=str(k+1).rjust(5,'0')
         log=green.run_syn(home,project_name,source[k,:],station_file,green_path,model_name,integrate,static,tsunami,
                 subfault,time_epi,beta,impulse,okada,mu,insar=insar)
         f=open(logpath+'make_synth.'+now+'.log','a')
@@ -365,8 +365,8 @@ def make_synthetics(home,project_name,station_file,fault_name,model_name,integra
         
         
 #Now make synthetics for source/station pairs
-def make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,tsunami,beta,
-                    hot_start,time_epi,ncpus,custom_stf,impulse=False,insar=False,okada=False,mu=45e9):
+def make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,quasistatic2dynamic,
+                             tsunami,beta,hot_start,time_epi,ncpus,custom_stf,NFFT,dt,impulse=False,insar=False,okada=False,mu=45e9):
     '''
     This routine will take the impulse response (GFs) and pass it into the routine that will
     convovle them with the source time function according to each subfaults strike and dip.
@@ -409,7 +409,7 @@ def make_parallel_synthetics(home,project_name,station_file,fault_name,model_nam
     #Make mpi system call
     print("MPI: Starting synthetics computation on", ncpus, "CPUs\n")
     mud_source=environ['MUD']+'/src/python/mudpy/'
-    mpi='mpiexec -n '+str(ncpus)+' python '+mud_source+'parallel.py run_parallel_synthetics '+home+' '+project_name+' '+station_file+' '+model_name+' '+str(integrate)+' '+str(static)+' '+str(tsunami)+' '+str(time_epi)+' '+str(beta)+' '+str(custom_stf)+' '+str(impulse)+' '+str(insar)+' '+str(okada)+' '+str(mu)
+    mpi='mpiexec -n '+str(ncpus)+' python '+mud_source+'parallel.py run_parallel_synthetics '+home+' '+project_name+' '+station_file+' '+model_name+' '+str(integrate)+' '+str(static)+' '+str(quasistatic2dynamic)+' '+str(tsunami)+' '+str(time_epi)+' '+str(beta)+' '+str(custom_stf)+' '+str(impulse)+' '+str(insar)+' '+str(okada)+' '+str(mu)+' '+str(NFFT)+' '+str(dt)
     print(mpi)
     mpi=split(mpi)
     p=subprocess.Popen(mpi)
@@ -421,7 +421,8 @@ def make_parallel_synthetics(home,project_name,station_file,fault_name,model_nam
 #Compute GFs for the ivenrse problem            
 def inversionGFs(home,project_name,GF_list,tgf_file,fault_name,model_name,
         dt,tsun_dt,NFFT,tsunNFFT,green_flag,synth_flag,dk,pmin,
-        pmax,kmax,beta,time_epi,hot_start,ncpus,custom_stf,impulse=False):
+        pmax,kmax,beta,time_epi,hot_start,ncpus,custom_stf,quasistatic2dynamic=0,
+        impulse=False):
     '''
     This routine will read a .gflist file and compute the required GF type for each station
     '''
@@ -434,7 +435,7 @@ def inversionGFs(home,project_name,GF_list,tgf_file,fault_name,model_name,
     stations=genfromtxt(gf_file,usecols=0,dtype='U')
     GF=genfromtxt(gf_file,usecols=[1,2,3,4,5,6,7],dtype='f8')
     fault_file=home+project_name+'/data/model_info/'+fault_name  
-    source=loadtxt(fault_file,ndmin=2)
+    source=genfromtxt(fault_file)
     num_faults=shape(source)[0]
     if num_faults/ncpus < 2:
         ncpus=int(floor(num_faults/2.))
@@ -524,7 +525,7 @@ def inversionGFs(home,project_name,GF_list,tgf_file,fault_name,model_name,
             static=1
             tsunami=False
             insar=False
-            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,impulse,insar)
+            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,quasistatic2dynamic,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,NFFT,dt,impulse,insar)
         #Decide which synthetics are required
         i=where(GF[:,3]==1)[0]
         if len(i)>0: #dispalcement waveform
@@ -541,7 +542,7 @@ def inversionGFs(home,project_name,GF_list,tgf_file,fault_name,model_name,
                 tsunami=False
             else: #I am computing seafloor deformation for tsunami GFs, eventaully
                 tsunami=True
-            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,impulse)
+            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,quasistatic2dynamic,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,NFFT,dt,impulse)
         #Decide which synthetics are required
         i=where(GF[:,4]==1)[0]
         if len(i)>0: #velocity waveform
@@ -558,7 +559,7 @@ def inversionGFs(home,project_name,GF_list,tgf_file,fault_name,model_name,
                 tsunami=False
             else: #I am computing seafloor deformation for tsunami GFs, eventaully
                 tsunami=True
-            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,impulse)
+            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,quasistatic2dynamic,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,NFFT,dt,impulse)
         #Decide which synthetics are required
         i=where(GF[:,5]==1)[0]
         if len(i)>0: #tsunami waveform
@@ -573,7 +574,7 @@ def inversionGFs(home,project_name,GF_list,tgf_file,fault_name,model_name,
             static=1
             tsunami=True
             station_file=tgf_file
-            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,impulse)
+            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,quasistatic2dynamic,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,NFFT,dt,impulse)
         #Decide which synthetics are required
         i=where(GF[:,6]==1)[0]
         if len(i)>0: # InSAR LOS
@@ -588,10 +589,34 @@ def inversionGFs(home,project_name,GF_list,tgf_file,fault_name,model_name,
             static=1
             tsunami=False
             insar=True
-            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,impulse,insar)
+            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,quasistatic2dynamic,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,NFFT,dt,impulse,insar)
     
-                    
-  
+                   
+
+    if quasistatic2dynamic == 1: #Conver static offsets to dyanmic step functions
+    
+        i = where(GF[:,2] == 1)[0]  #read from statics column in gflist
+        if len(i) > 0: 
+            
+            print('quasistatic2dynamic requested')
+            #Make dummy station file
+            f = open(home+project_name+'/data/station_info/'+station_file,'w')
+            
+            for k in range(len(i)):
+                out = stations[i[k]]+'\t'+repr(GF[i[k],0])+'\t'+repr(GF[i[k],1])+'\n'
+                f.write(out)
+            f.close()
+            
+            integrate=0
+            static=0
+            tsunami=False
+            insar=True
+            make_parallel_synthetics(home,project_name,station_file,fault_name,model_name,integrate,static,quasistatic2dynamic,tsunami,beta,hot_start,time_epi,ncpus,custom_stf,NFFT,dt,impulse,insar)
+            
+        else:
+            
+            print('ERROR: No sites in gflist file')
+        
 
 
 
@@ -816,7 +841,7 @@ def run_inversion(home,project_name,run_name,fault_name,model_name,GF_list,G_fro
                 L2,Lmodel,VR,ABIC,Mo,Mw,model_name,fault_name,G_name,GF_list,solver,L2data)
             #Write output to file
             if GOD_inversion==True:
-                num=str(kout).rjust(4,'0')
+                num=str(kout).rjust(5,'0')
                 np.save(home+project_name+'/output/inverse_models/'+run_name+'.'+num+'.syn.npy',ds)
                 inv.write_synthetics_GOD(home,project_name,run_name,GF_list,ds,kout,decimate)
             else:
