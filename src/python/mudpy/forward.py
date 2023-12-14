@@ -1350,11 +1350,11 @@ def load_fakequakes_synthetics_sub(home,project_name,fault_name,model_name,GF_li
                      ss,fmt='%s\t%s\t%s')
             gf_list=GF_list[:-7]+'_sub_'+str(c)+'.gflist'
             g_name=G_name+'_'+str(c)
-            # p=multiprocessing.Process(target=load_fakequakes_synthetics_test(home,project_name,fault_name,model_name,gf_list,
-            #                                                   G_from_file,g_name,sta_split,g_cpu))
+            p=multiprocessing.Process(target=load_fakequakes_synthetics_test(home,project_name,fault_name,model_name,gf_list,
+                                                              G_from_file,g_name,sta_split,g_cpu))
             
-            p=multiprocessing.Process(target=load_fakequakes_synthetics,args=(home,project_name,fault_name,model_name,gf_list,
-                                                                G_from_file,g_name))
+            # p=multiprocessing.Process(target=load_fakequakes_synthetics,args=(home,project_name,fault_name,model_name,gf_list,
+            #                                                     G_from_file,g_name))
             job.append(p)
             p.start()
             c+=1
